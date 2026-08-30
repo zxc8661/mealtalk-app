@@ -46,27 +46,19 @@ export function listMeals(api: ApiClient, date: string, signal?: AbortSignal): P
   return api.request<MealJournal>(`/api/v1/meals?date=${encodeURIComponent(date)}`, { signal });
 }
 
+/*
+ * There is no getMeal client function on purpose. The only screen that shows a
+ * single meal also shows that day's running totals, and the journal response
+ * carries both, so fetching one meal separately would add a second request
+ * without removing the first.
+ */
+
 export function createMeal(api: ApiClient, input: MealInput): Promise<Meal> {
   return api.request<Meal>('/api/v1/meals', { method: 'POST', body: input });
 }
 
-export function updateMeal(api: ApiClient, mealId: number, input: MealInput): Promise<Meal> {
-  return api.request<Meal>(`/api/v1/meals/${mealId}`, { method: 'PUT', body: input });
-}
-
-export function deleteMeal(api: ApiClient, mealId: number): Promise<void> {
-  return api.request<void>(`/api/v1/meals/${mealId}`, { method: 'DELETE' });
-}
-
-/** Mirrors the API ordering contract when a cached/intercepted response needs normalization. */
-export function orderMeals(meals: readonly Meal[]): Meal[] {
-  return [...meals].sort((left, right) => {
-    if (left.eatenAt === null && right.eatenAt !== null) return 1;
-    if (left.eatenAt !== null && right.eatenAt === null) return -1;
-    if (left.eatenAt !== null && right.eatenAt !== null) {
-      const compared = left.eatenAt.localeCompare(right.eatenAt);
-      if (compared !== 0) return compared;
-    }
-    return left.id - right.id;
-  });
-}
+/*
+ * Updating and deleting a meal are supported by the API, but the guide defers
+ * 식단 수정/삭제 to a later release and no screen calls them yet. Add the client
+ * functions back together with that UI.
+ */

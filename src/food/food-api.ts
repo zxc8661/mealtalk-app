@@ -11,29 +11,14 @@ export type Food = {
   readonly fatG: number;
 };
 
-export type FoodInput = {
-  readonly name: string;
-  readonly servingAmount: number;
-  readonly servingUnit: string;
-  readonly caloriesKcal: number;
-  readonly carbohydratesG: number;
-  readonly proteinG: number;
-  readonly fatG: number;
-};
-
+/**
+ * Food search backing the meal entry screen.
+ *
+ * Creating, editing and archiving foods are supported by the API but have no
+ * screen in the current product, so no client function exists for them. Add one
+ * back alongside the UI that needs it rather than keeping unreachable code here.
+ */
 export function listFoods(api: ApiClient, query: string, signal?: AbortSignal): Promise<Food[]> {
   const parameters = query ? `?query=${encodeURIComponent(query)}` : '';
   return api.request<Food[]>(`/api/v1/foods${parameters}`, { signal });
-}
-
-export function createFood(api: ApiClient, input: FoodInput): Promise<Food> {
-  return api.request<Food>('/api/v1/foods', { method: 'POST', body: input });
-}
-
-export function updateFood(api: ApiClient, foodId: number, input: FoodInput): Promise<Food> {
-  return api.request<Food>(`/api/v1/foods/${foodId}`, { method: 'PUT', body: input });
-}
-
-export function archiveFood(api: ApiClient, foodId: number): Promise<void> {
-  return api.request<void>(`/api/v1/foods/${foodId}`, { method: 'DELETE' });
 }
