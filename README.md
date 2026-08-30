@@ -25,6 +25,27 @@ In the output, you'll find options to open the app in a
 
 You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
 
+## Configuration
+
+Copy `.env.example` to a local `.env` and set the API URL and platform-specific Google OAuth client IDs. Google ID tokens continue to be exchanged through `/api/v1/auth/google`; backend access tokens are stored in browser local storage on web and Expo SecureStore on native platforms.
+
+Deterministic browser E2E authentication is development-only. Start Expo with `EXPO_PUBLIC_E2E_AUTH_ENABLED=true`, then inject the backend fixture ID token before application JavaScript runs:
+
+```ts
+await context.addInitScript(
+  ({ token }) => {
+    Object.defineProperties(globalThis, {
+      __MEALTALK_E2E_ID_TOKEN__: { value: token },
+      // Optional: an authenticated endpoint mocked as 401 for session-clear verification.
+      __MEALTALK_E2E_SESSION_PROBE_PATH__: { value: '/api/v1/e2e/session-probe' },
+    });
+  },
+  { token: process.env.MEALTALK_E2E_ID_TOKEN },
+);
+```
+
+The fixture token remains in the test runner's non-public environment and is never stored in an `EXPO_PUBLIC_*` variable or bundled into the app. Production builds ignore the runtime hook, and the production backend must reject the fixture.
+
 ## Get a fresh project
 
 When you're ready, run:

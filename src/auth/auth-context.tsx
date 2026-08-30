@@ -1,4 +1,3 @@
-import * as SecureStore from 'expo-secure-store';
 import {
   createContext,
   type PropsWithChildren,
@@ -8,10 +7,9 @@ import {
   useMemo,
   useState,
 } from 'react';
-import { Platform } from 'react-native';
 
-const TOKEN_KEY = 'mealtalk.access-token';
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8080';
+import { readSessionToken, removeSessionToken, writeSessionToken } from '@/auth/session';
+import { API_URL, getE2ETestIdToken } from '@/config/environment';
 
 type AuthContextValue = {
   readonly isLoading: boolean;
@@ -21,29 +19,6 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-
-async function readToken(): Promise<string | null> {
-  if (Platform.OS === 'web') {
-    return globalThis.localStorage?.getItem(TOKEN_KEY) ?? null;
-  }
-  return SecureStore.getItemAsync(TOKEN_KEY);
-}
-
-async function writeToken(token: string): Promise<void> {
-  if (Platform.OS === 'web') {
-    globalThis.localStorage?.setItem(TOKEN_KEY, token);
-    return;
-  }
-  await SecureStore.setItemAsync(TOKEN_KEY, token);
-}
-
-async function removeToken(): Promise<void> {
-  if (Platform.OS === 'web') {
-    globalThis.localStorage?.removeItem(TOKEN_KEY);
-    return;
-  }
-  await SecureStore.deleteItemAsync(TOKEN_KEY);
-}
 
 class AuthApiError extends Error {
   readonly status: number;
@@ -81,11 +56,21 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    void readToken()
+    void readSessionToken()
+      .then(async (storedToken) => {
+        if (storedToken) return storedToken;
+
+        const e2eIdToken = getE2ETestIdToken();
+        if (!e2eIdToken) return null;
+
+        const fixtureAccessToken = await exchangeGoogleToken(e2eIdToken);
+        await writeSessionToken(fixtureAccessToken);
+        return fixtureAccessToken;
+      })
       .then((token) => setAccessToken(token))
       .catch((error: unknown) => {
         if (error instanceof Error) {
-          console.warn('저장된 로그인 정보를 읽지 못했습니다.', error.message);
+          console.warn('저장된 로그인 정보를 준비하지 못했습니다.', error.message);
           return;
         }
         throw error;
@@ -95,13 +80,16 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const signIn = useCallback(async (idToken: string) => {
     const token = await exchangeGoogleToken(idToken);
-    await writeToken(token);
+    await writeSessionToken(token);
     setAccessToken(token);
   }, []);
 
   const signOut = useCallback(async () => {
-    await removeToken();
-    setAccessToken(null);
+    try {
+      await removeSessionToken();
+    } finally {
+      setAccessToken(null);
+    }
   }, []);
 
   const value = useMemo(

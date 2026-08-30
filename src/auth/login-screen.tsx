@@ -5,20 +5,30 @@ import { ActivityIndicator, Pressable, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AuthApiError, useAuth } from '@/auth/auth-context';
-import { Colors, Spacing } from '@/constants/theme';
+import {
+  ControlSize,
+  FormContentWidth,
+  Opacity,
+  Radius,
+  Spacing,
+} from '@/constants/theme';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { useTheme } from '@/hooks/use-theme';
 
 WebBrowser.maybeCompleteAuthSession();
 
+const UNCONFIGURED_CLIENT_ID = 'mealtalk-unconfigured';
+
 export default function LoginScreen() {
   const { signIn } = useAuth();
+  const theme = useTheme();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [request, response, promptAsync] = useIdTokenAuthRequest({
-    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? UNCONFIGURED_CLIENT_ID,
+    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? UNCONFIGURED_CLIENT_ID,
+    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID ?? UNCONFIGURED_CLIENT_ID,
     selectAccount: true,
   });
 
@@ -76,12 +86,14 @@ export default function LoginScreen() {
       <SafeAreaView style={styles.content}>
         <ThemedView style={styles.hero}>
           <ThemedText type="title">MealTalk</ThemedText>
-          <ThemedText style={styles.subtitle}>나에게 맞는 식단을 가볍게 기록하세요.</ThemedText>
+          <ThemedText style={styles.subtitle} themeColor="textSecondary">
+            나에게 맞는 식단을 가볍게 기록하세요.
+          </ThemedText>
         </ThemedView>
 
-        <ThemedView style={styles.card}>
+        <ThemedView type="surface" style={styles.card}>
           <ThemedText type="subtitle">로그인하고 시작하기</ThemedText>
-          <ThemedText style={styles.description}>
+          <ThemedText themeColor="textSecondary">
             Google 계정으로 안전하게 로그인합니다. 서비스에 필요한 정보만 요청합니다.
           </ThemedText>
 
@@ -93,21 +105,27 @@ export default function LoginScreen() {
               setErrorMessage(null);
               void promptAsync();
             }}
-            style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
+            style={({ pressed }) => [
+              styles.button,
+              { backgroundColor: theme.authProvider },
+              pressed && styles.buttonPressed,
+            ]}>
             {isSigningIn ? (
-              <ActivityIndicator color={Colors.light.background} />
+              <ActivityIndicator color={theme.onAuthProvider} />
             ) : (
-              <ThemedText style={styles.buttonText}>Google로 계속하기</ThemedText>
+              <ThemedText style={[styles.buttonText, { color: theme.onAuthProvider }]}>
+                Google로 계속하기
+              </ThemedText>
             )}
           </Pressable>
 
           {!hasClientId && (
-            <ThemedText style={styles.error}>
+            <ThemedText style={[styles.error, { color: theme.error }]}>
               Google Client ID가 설정되지 않았습니다. 환경변수를 확인해주세요.
             </ThemedText>
           )}
           {(errorMessage ?? responseError ?? missingTokenError) && (
-            <ThemedText style={styles.error}>
+            <ThemedText style={[styles.error, { color: theme.error }]}>
               {errorMessage ?? responseError ?? missingTokenError}
             </ThemedText>
           )}
@@ -118,33 +136,33 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: Spacing.four,
+  },
   content: {
     flex: 1,
-    width: '100%',
-    maxWidth: 520,
-    alignSelf: 'center',
+    maxWidth: FormContentWidth,
+    alignSelf: 'stretch',
     justifyContent: 'center',
-    padding: Spacing.four,
+    paddingVertical: Spacing.four,
     gap: Spacing.five,
   },
   hero: { gap: Spacing.two, alignItems: 'center' },
-  subtitle: { color: Colors.light.textSecondary, textAlign: 'center' },
+  subtitle: { textAlign: 'center' },
   card: {
     gap: Spacing.three,
     padding: Spacing.four,
-    borderRadius: Spacing.two,
-    backgroundColor: Colors.light.backgroundElement,
+    borderRadius: Radius.card,
   },
-  description: { color: Colors.light.textSecondary, lineHeight: 22 },
   button: {
-    minHeight: 52,
+    minHeight: ControlSize.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: Spacing.one,
-    backgroundColor: '#1A73E8',
+    borderRadius: Radius.control,
   },
-  buttonPressed: { opacity: 0.8 },
-  buttonText: { color: '#FFFFFF', fontWeight: '700' },
-  error: { color: '#B42318', textAlign: 'center' },
+  buttonPressed: { opacity: Opacity.pressed },
+  buttonText: { fontWeight: '700' },
+  error: { textAlign: 'center' },
 });
