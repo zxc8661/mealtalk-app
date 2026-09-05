@@ -1,53 +1,34 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 
-import { ApiError } from '@/api/api-error';
-import { useApi } from '@/api/api-context';
-import { requestMessage } from '@/api/error-message';
-import { isIsoDate } from '@/nutrition/format';
-import { listMeals, type MealJournal } from '@/meal/meal-api';
+import { useDatabase } from '@/db/database-context';
+import { useAsyncRead } from '@/db/use-async-read';
+import { isIsoDate } from '@/format/date';
+import type { MealRecord } from '@/meal/meal-record';
+import { listMeals } from '@/meal/meal-store';
 
 type JournalState = {
-  readonly journal: MealJournal | null;
+  readonly meals: readonly MealRecord[];
   readonly isLoading: boolean;
   readonly error: string | null;
   readonly reload: () => void;
 };
 
-/** Loads one day's meals and totals, reloading whenever the date changes. */
-export function useMealJournal(date: string, reloadToken = 0): JournalState {
-  const api = useApi();
-  const [journal, setJournal] = useState<MealJournal | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
-  /**
-   * Identifies the request the current state belongs to. Loading is derived by
-   * comparing it with the requested key, so the effect never has to set state
-   * synchronously just to raise a spinner.
-   */
-  const requestKey = `${date}:${reloadKey}:${reloadToken}`;
-  const [settledKey, setSettledKey] = useState<string | null>(null);
+const NO_MEALS: readonly MealRecord[] = [];
 
-  useEffect(() => {
-    if (!isIsoDate(date)) return;
-    const controller = new AbortController();
-    void listMeals(api, date, controller.signal)
-      .then((next) => {
-        if (controller.signal.aborted) return;
-        setJournal(next);
-        setError(null);
-      })
-      .catch((cause: unknown) => {
-        if (controller.signal.aborted) return;
-        if (cause instanceof ApiError && cause.isUnauthorized) return;
-        setError(requestMessage(cause));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setSettledKey(requestKey);
-      });
-    return () => controller.abort();
-  }, [api, date, requestKey]);
+/**
+ * One day's records. `reloadToken` lets a screen re-read after it regains focus
+ * or writes a record, without owning the read itself.
+ */
+export function useMealJournal(date: string, reloadToken = 0): JournalState {
+  const database = useDatabase();
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const { data, isLoading, error } = useAsyncRead(
+    () => (isIsoDate(date) ? listMeals(database, date) : Promise.resolve([])),
+    `${date}:${reloadKey}:${reloadToken}`,
+  );
 
   const reload = useCallback(() => setReloadKey((key) => key + 1), []);
 
-  return { journal, isLoading: settledKey !== requestKey, error, reload };
+  return { meals: data ?? NO_MEALS, isLoading, error, reload };
 }

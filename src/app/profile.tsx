@@ -1,20 +1,17 @@
-import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { useAuth } from '@/auth/auth-context';
 import { ErrorState, LoadingState } from '@/components/async-state';
+import { Card, SectionHeading } from '@/components/cards';
 import { PrimaryButton, SecondaryButton } from '@/components/form-controls';
-import { Card, SectionHeading } from '@/components/nutrition-ui';
 import { ScreenHeader } from '@/components/screen-header';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
-import { formatAmount, formatCalories, formatGrams } from '@/nutrition/format';
-import { useCurrentUser } from '@/profile/current-user-context';
+import { activityLabel, formatMeasure, goalLabel } from '@/profile/labels';
+import { useProfile } from '@/profile/profile-context';
 import { ProfileForm } from '@/profile/profile-form';
-import { activityLabel, goalLabel, targetValue } from '@/profile/targets';
 
 function Row({ label, value }: { readonly label: string; readonly value: string }) {
   return (
@@ -29,45 +26,31 @@ function Row({ label, value }: { readonly label: string; readonly value: string 
 
 /** P-06 프로필 / 설정 */
 export default function ProfileScreen() {
-  const router = useRouter();
-  const { signOut } = useAuth();
-  const { user, isLoading, error, reload, apply } = useCurrentUser();
+  const { profile, isLoading, error, apply } = useProfile();
   const [isEditing, setIsEditing] = useState(false);
 
   if (isLoading) {
     return (
-      <Frame>
-        <LoadingState label="프로필을 불러오는 중입니다." />
-      </Frame>
+      <ThemedView style={styles.screen}>
+        <SafeAreaView style={styles.safeArea} edges={['top']}>
+          <ScreenHeader title="프로필" />
+          <LoadingState label="프로필을 불러오는 중입니다." />
+        </SafeAreaView>
+      </ThemedView>
     );
   }
-
-  if (error || !user) {
-    return (
-      <Frame>
-        <ErrorState
-          title="프로필을 불러오지 못했습니다."
-          message={error ?? undefined}
-          onRetry={reload}
-        />
-      </Frame>
-    );
-  }
-
-  const targetWeight = targetValue(user, 'TARGET_WEIGHT');
-  const calories = targetValue(user, 'DAILY_CALORIES');
-  const protein = targetValue(user, 'DAILY_PROTEIN');
 
   return (
     <ThemedView style={styles.screen}>
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <ScreenHeader title="프로필" />
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          {error ? <ErrorState title="프로필을 불러오지 못했습니다." message={error} /> : null}
+
           {isEditing ? (
             <>
               <ProfileForm
-                user={user}
-                mode="edit"
+                profile={profile}
                 onSaved={(saved) => {
                   apply(saved);
                   setIsEditing(false);
@@ -78,26 +61,19 @@ export default function ProfileScreen() {
           ) : (
             <>
               <Card>
-                <SectionHeading title="신체 정보" />
-                <Row label="키" value={user.profile ? `${formatAmount(user.profile.heightCm)} cm` : '-'} />
-                <Row
-                  label="현재 체중"
-                  value={user.profile ? `${formatAmount(user.profile.weightKg)} kg` : '-'}
-                />
-                <Row label="목표 체중" value={targetWeight !== null ? `${formatAmount(targetWeight)} kg` : '-'} />
-                <Row label="활동량" value={user.profile ? activityLabel(user.profile.activityLevel) : '-'} />
-                <Row label="목표 유형" value={user.profile ? goalLabel(user.profile.goalMode) : '-'} />
+                <SectionHeading title="내 정보" />
+                <Row label="이름" value={profile.displayName ?? '-'} />
+                <Row label="키" value={formatMeasure(profile.heightCm, 'cm')} />
+                <Row label="현재 체중" value={formatMeasure(profile.weightKg, 'kg')} />
+                <Row label="활동량" value={activityLabel(profile.activityLevel)} />
+                <Row label="목표 유형" value={goalLabel(profile.goalMode)} />
               </Card>
 
               <Card>
-                <SectionHeading title="목표 영양" />
-                <Row
-                  label="목표 칼로리"
-                  value={calories !== null ? `${formatCalories(calories)} kcal` : '-'}
-                />
-                <Row label="목표 단백질" value={protein !== null ? formatGrams(protein) : '-'} />
-                <ThemedText type="caption" themeColor="textSecondary">
-                  탄수화물과 지방은 목표 없이 섭취량만 표시됩니다.
+                <SectionHeading title="기록 보관" />
+                <ThemedText type="small" themeColor="textSecondary">
+                  모든 기록과 사진은 이 기기에만 저장됩니다. 계정이 없으므로 앱을 지우거나 기기를
+                  바꾸면 기록은 복구할 수 없습니다.
                 </ThemedText>
               </Card>
 
@@ -105,12 +81,6 @@ export default function ProfileScreen() {
                 label="프로필 수정"
                 pendingLabel="여는 중입니다"
                 onPress={() => setIsEditing(true)}
-              />
-              <SecondaryButton
-                label="로그아웃"
-                onPress={() => {
-                  void signOut().then(() => router.replace('/'));
-                }}
               />
             </>
           )}
@@ -120,18 +90,9 @@ export default function ProfileScreen() {
   );
 }
 
-function Frame({ children }: { readonly children: React.ReactNode }) {
-  return (
-    <ThemedView style={styles.screen}>
-      <SafeAreaView style={styles.centered}>{children}</SafeAreaView>
-    </ThemedView>
-  );
-}
-
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   safeArea: { flex: 1 },
-  centered: { flex: 1, justifyContent: 'center' },
   content: {
     width: '100%',
     maxWidth: MaxContentWidth,
@@ -141,5 +102,10 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.four,
     paddingBottom: Spacing.six,
   },
-  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.three },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+  },
 });

@@ -1,152 +1,160 @@
-import { useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Image } from 'expo-image';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useRef, useState } from 'react';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ApiError } from '@/api/api-error';
-import { useApi } from '@/api/api-context';
-import { requestMessage } from '@/api/error-message';
+import { ErrorState, LoadingState } from '@/components/async-state';
+import { Card, SectionHeading } from '@/components/cards';
 import { ChoiceGroup, FormField, PrimaryButton, SecondaryButton } from '@/components/form-controls';
-import { Card, MacroChips, SectionHeading } from '@/components/nutrition-ui';
 import { ScreenHeader } from '@/components/screen-header';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import {
-  BorderWidth,
-  ControlSize,
-  MaxContentWidth,
-  Opacity,
-  Radius,
-  Spacing,
-} from '@/constants/theme';
-import { listFoods, type Food } from '@/food/food-api';
-import { createMeal, type MealInput, type MealType } from '@/meal/meal-api';
+import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
+import { useDatabase } from '@/db/database-context';
+import { storeMessage } from '@/db/store-error';
+import { formatKoreanDate, localToday, shiftDate } from '@/format/date';
+import { MEMO_MAX_LENGTH, normalizeMemo, type MealPhotoRef, type MealType } from '@/meal/meal-record';
 import { MEAL_TYPE_CHOICES } from '@/meal/meal-presentation';
-import {
-  formatAmount,
-  formatCalories,
-  formatKoreanDate,
-  isPositiveDecimal,
-  localToday,
-  shiftDate,
-} from '@/nutrition/format';
-import { useTheme } from '@/hooks/use-theme';
+import { createRecord, updateRecord, type PhotoIntent } from '@/meal/meal-write';
+import { useEditableMeal } from '@/meal/use-editable-meal';
+import { MealPhoto } from '@/photo/meal-photo';
+import { permissionMessage, pickImage, type PickSource } from '@/photo/photo-picker';
+import type { PickedImage } from '@/photo/photo-store';
 
-type ItemDraft = { readonly food: Food; readonly amount: string };
+/**
+ * The photo slot while the record is being written.
+ *
+ * `stored` and `picked` are kept apart because they mean different things at save
+ * time: one is bytes already on disk that must survive untouched, the other is
+ * bytes that still have to be normalized and written.
+ */
+type PhotoDraft =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'stored'; readonly photo: MealPhotoRef }
+  | { readonly kind: 'picked'; readonly picked: PickedImage };
 
-function scale(food: Food, amount: number) {
-  const ratio = food.servingAmount > 0 ? amount / food.servingAmount : 0;
-  return {
-    calories: food.caloriesKcal * ratio,
-    carbohydrates: food.carbohydratesG * ratio,
-    protein: food.proteinG * ratio,
-    fat: food.fatG * ratio,
-  };
+function intentOf(draft: PhotoDraft): PhotoIntent {
+  switch (draft.kind) {
+    case 'picked':
+      return { kind: 'replace', picked: draft.picked };
+    case 'stored':
+      return { kind: 'keep' };
+    case 'none':
+      return { kind: 'remove' };
+  }
 }
 
-/** P-04 식단 추가 */
+/** P-04 기록 추가 / 기록 수정 */
 export default function MealEntryScreen() {
-  const api = useApi();
   const router = useRouter();
-  const theme = useTheme();
+  const database = useDatabase();
+  const params = useLocalSearchParams<{ mealId?: string; date?: string }>();
+
+  const editingMealId =
+    params.mealId && Number.isFinite(Number(params.mealId)) ? Number(params.mealId) : null;
+  const isEditing = editingMealId !== null;
+  const { meal: loadedMeal, isLoading: isLoadingMeal, error: loadError } = useEditableMeal(editingMealId);
 
   const [mealType, setMealType] = useState<MealType>('LUNCH');
-  const [date, setDate] = useState(localToday);
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Food[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [items, setItems] = useState<ItemDraft[]>([]);
+  const [date, setDate] = useState(() => params.date ?? localToday());
+  const [memo, setMemo] = useState('');
+  const [photo, setPhoto] = useState<PhotoDraft>({ kind: 'none' });
   const [formError, setFormError] = useState<string | null>(null);
+  const [pickerNotice, setPickerNotice] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const savingRef = useRef(false);
 
-  // Show a starting list so the search box is never an empty dead end.
-  useEffect(() => {
-    const controller = new AbortController();
-    void listFoods(api, '', controller.signal)
-      .then((foods) => setResults(foods.slice(0, 8)))
-      .catch((cause: unknown) => {
-        if (controller.signal.aborted || (cause instanceof ApiError && cause.isUnauthorized)) return;
-        setSearchError('식품 목록을 불러오지 못했습니다.');
-      });
-    return () => controller.abort();
-  }, [api]);
+  // Adopt the stored record once, then leave the user's edits alone. Adjusting
+  // during render is React's documented way to seed state from loaded data.
+  const [adoptedMealId, setAdoptedMealId] = useState<number | null>(null);
+  if (loadedMeal && adoptedMealId !== editingMealId) {
+    setAdoptedMealId(editingMealId);
+    setMealType(loadedMeal.mealType);
+    setDate(loadedMeal.mealDate);
+    setMemo(loadedMeal.memo ?? '');
+    setPhoto(loadedMeal.photo ? { kind: 'stored', photo: loadedMeal.photo } : { kind: 'none' });
+  }
 
-  const totals = useMemo(
-    () =>
-      items.reduce(
-        (sum, item) => {
-          const amount = Number(item.amount);
-          if (!Number.isFinite(amount) || amount <= 0) return sum;
-          const scaled = scale(item.food, amount);
-          return {
-            calories: sum.calories + scaled.calories,
-            carbohydrates: sum.carbohydrates + scaled.carbohydrates,
-            protein: sum.protein + scaled.protein,
-            fat: sum.fat + scaled.fat,
-          };
-        },
-        { calories: 0, carbohydrates: 0, protein: 0, fat: 0 },
-      ),
-    [items],
-  );
+  const hasPhoto = photo.kind !== 'none';
+  const canSave = normalizeMemo(memo) !== null || hasPhoto;
 
-  const search = async () => {
-    setIsSearching(true);
-    setSearchError(null);
-    try {
-      const foods = await listFoods(api, query.trim());
-      setResults(foods.filter((food) => !items.some((item) => item.food.id === food.id)));
-    } catch (cause: unknown) {
-      if (!(cause instanceof ApiError && cause.isUnauthorized)) setSearchError(requestMessage(cause));
-    } finally {
-      setIsSearching(false);
+  const choosePhoto = async (source: PickSource) => {
+    setPickerNotice(null);
+    const result = await pickImage(source);
+    if (result.status === 'cancelled') return;
+    if (result.status === 'denied') {
+      setPickerNotice(permissionMessage(result.source));
+      return;
     }
-  };
-
-  const addFood = (food: Food) => {
-    setItems((previous) => [...previous, { food, amount: String(food.servingAmount) }]);
-    setResults((previous) => previous.filter((candidate) => candidate.id !== food.id));
+    setPhoto({ kind: 'picked', picked: result.image });
     setFormError(null);
   };
 
   const save = async () => {
     if (savingRef.current) return;
-    if (items.length === 0) {
-      setFormError('최소 한 가지 식품을 추가해주세요.');
-      return;
-    }
-    if (items.some((item) => !isPositiveDecimal(item.amount))) {
-      setFormError('각 식품의 섭취량을 0보다 큰 수로 입력해주세요.');
+    if (!canSave) {
+      setFormError('메모를 입력하거나 사진을 추가해주세요.');
       return;
     }
 
     savingRef.current = true;
     setIsSaving(true);
     setFormError(null);
-    const input: MealInput = {
-      mealDate: date,
-      mealType,
-      eatenAt: null,
-      items: items.map((item) => ({ foodId: item.food.id, amount: Number(item.amount) })),
-    };
     try {
-      const saved = await createMeal(api, input);
+      // A record dated in the past has no trustworthy time of day, so only
+      // today's new records carry one rather than inventing "now" for a past day.
+      const draft = {
+        mealDate: date,
+        mealType,
+        eatenAt: loadedMeal
+          ? loadedMeal.eatenAt
+          : date === localToday()
+            ? new Date().toISOString()
+            : null,
+        memo,
+      };
+
+      const saved =
+        loadedMeal && editingMealId !== null
+          ? await updateRecord(database, editingMealId, draft, loadedMeal, intentOf(photo))
+          : await createRecord(database, draft, intentOf(photo));
+
       router.replace({ pathname: '/meal-saved', params: { mealId: String(saved.id), date } });
     } catch (cause: unknown) {
-      if (cause instanceof ApiError && cause.isUnauthorized) return;
-      setFormError(requestMessage(cause));
+      setFormError(storeMessage(cause));
     } finally {
       savingRef.current = false;
       setIsSaving(false);
     }
   };
 
+  if (isEditing && isLoadingMeal) {
+    return (
+      <ThemedView style={styles.screen}>
+        <SafeAreaView style={styles.safeArea} edges={['top']}>
+          <ScreenHeader title="기록 수정" />
+          <LoadingState label="기록을 불러오는 중입니다." />
+        </SafeAreaView>
+      </ThemedView>
+    );
+  }
+
+  if (isEditing && loadError) {
+    return (
+      <ThemedView style={styles.screen}>
+        <SafeAreaView style={styles.safeArea} edges={['top']}>
+          <ScreenHeader title="기록 수정" />
+          <ErrorState title="기록을 불러오지 못했습니다." message={loadError} />
+        </SafeAreaView>
+      </ThemedView>
+    );
+  }
+
   return (
     <ThemedView style={styles.screen}>
       <SafeAreaView style={styles.safeArea} edges={['top']}>
-        <ScreenHeader title="식단 추가" />
+        <ScreenHeader title={isEditing ? '기록 수정' : '기록 추가'} />
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <Card>
             <ChoiceGroup
@@ -157,137 +165,94 @@ export default function MealEntryScreen() {
               onChange={setMealType}
             />
             <View style={styles.dateRow}>
-              <SecondaryButton label="이전 날짜" disabled={isSaving} onPress={() => setDate(shiftDate(date, -1))} />
+              <SecondaryButton
+                label="이전 날짜"
+                disabled={isSaving}
+                onPress={() => setDate(shiftDate(date, -1))}
+              />
               <View style={styles.dateLabel}>
                 <ThemedText type="caption" themeColor="textSecondary">
-                  섭취 날짜
+                  먹은 날짜
                 </ThemedText>
                 <ThemedText type="bodyStrong">{formatKoreanDate(date)}</ThemedText>
               </View>
-              <SecondaryButton label="다음 날짜" disabled={isSaving} onPress={() => setDate(shiftDate(date, 1))} />
+              <SecondaryButton
+                label="다음 날짜"
+                disabled={isSaving}
+                onPress={() => setDate(shiftDate(date, 1))}
+              />
             </View>
           </Card>
 
           <Card>
-            <SectionHeading title="식품 검색" />
-            <FormField
-              label="식품 이름"
-              value={query}
-              onChangeText={setQuery}
-              onSubmitEditing={() => void search()}
-              placeholder="예: 닭가슴살"
-              editable={!isSaving}
-              returnKeyType="search"
-            />
-            <PrimaryButton
-              label="검색"
-              pendingLabel="검색 중입니다"
-              pending={isSearching}
-              onPress={() => void search()}
-            />
-            {searchError ? (
-              <ThemedText type="small" themeColor="error" accessibilityLiveRegion="polite">
-                {searchError}
-              </ThemedText>
+            <SectionHeading title="사진" />
+            {photo.kind === 'stored' ? (
+              <MealPhoto photo={photo.photo} accessibilityLabel="선택한 사진" />
+            ) : null}
+            {photo.kind === 'picked' ? (
+              <Image
+                alt="선택한 사진"
+                accessibilityLabel="선택한 사진"
+                source={{ uri: photo.picked.uri }}
+                contentFit="cover"
+                style={[
+                  styles.preview,
+                  { aspectRatio: photo.picked.width / Math.max(photo.picked.height, 1) },
+                ]}
+              />
             ) : null}
 
-            {results.length > 0 ? (
-              <View style={styles.results}>
-                {results.map((food) => (
-                  <Pressable
-                    key={food.id}
-                    accessibilityRole="button"
-                    accessibilityLabel={`${food.name} 추가`}
-                    disabled={isSaving}
-                    onPress={() => addFood(food)}
-                    style={({ pressed }) => [
-                      styles.resultRow,
-                      { borderColor: theme.border, backgroundColor: theme.surfaceRaised },
-                      pressed && styles.pressed,
-                    ]}>
-                    <View style={styles.resultCopy}>
-                      <ThemedText type="bodyStrong">{food.name}</ThemedText>
-                      <ThemedText type="caption" themeColor="textSecondary">
-                        {`${formatAmount(food.servingAmount)}${food.servingUnit} 기준 · ${formatCalories(food.caloriesKcal)} kcal`}
-                      </ThemedText>
-                    </View>
-                    <ThemedText type="bodyStrong" themeColor="primary">
-                      추가
-                    </ThemedText>
-                  </Pressable>
-                ))}
+            <View style={styles.photoActions}>
+              <View style={styles.photoButton}>
+                <SecondaryButton
+                  label={hasPhoto ? '사진 다시 찍기' : '사진 찍기'}
+                  disabled={isSaving}
+                  onPress={() => void choosePhoto('camera')}
+                />
               </View>
+              <View style={styles.photoButton}>
+                <SecondaryButton
+                  label={hasPhoto ? '앨범에서 바꾸기' : '앨범에서 고르기'}
+                  disabled={isSaving}
+                  onPress={() => void choosePhoto('library')}
+                />
+              </View>
+            </View>
+            {hasPhoto ? (
+              <SecondaryButton
+                label="사진 빼기"
+                disabled={isSaving}
+                onPress={() => setPhoto({ kind: 'none' })}
+              />
             ) : (
               <ThemedText type="small" themeColor="textSecondary">
-                검색 결과가 없습니다. 다른 이름으로 찾아보세요.
+                사진 없이 메모만 남겨도 기록됩니다.
               </ThemedText>
             )}
+            {pickerNotice ? (
+              <ThemedText type="small" themeColor="error" accessibilityLiveRegion="polite">
+                {pickerNotice}
+              </ThemedText>
+            ) : null}
           </Card>
 
           <Card>
-            <SectionHeading
-              title="선택한 식품"
-              action={
-                <ThemedText type="small" themeColor="textSecondary">{`${items.length}개`}</ThemedText>
-              }
+            <SectionHeading title="메모" />
+            <FormField
+              label="먹은 음식이나 기분"
+              value={memo}
+              onChangeText={(value) => {
+                setMemo(value);
+                setFormError(null);
+              }}
+              placeholder="예: 점심에 김치찌개랑 계란말이"
+              hint={`${normalizeMemo(memo)?.length ?? 0} / ${MEMO_MAX_LENGTH}자`}
+              multiline
+              numberOfLines={4}
+              maxLength={MEMO_MAX_LENGTH}
+              editable={!isSaving}
+              style={styles.memoInput}
             />
-            {items.length === 0 ? (
-              <ThemedText type="small" themeColor="textSecondary">
-                위에서 식품을 검색해 추가하면 섭취량을 입력할 수 있어요.
-              </ThemedText>
-            ) : (
-              items.map((item) => {
-                const amount = Number(item.amount);
-                const scaled = scale(item.food, Number.isFinite(amount) && amount > 0 ? amount : 0);
-                return (
-                  <View
-                    key={item.food.id}
-                    style={[styles.itemBlock, { backgroundColor: theme.backgroundElement }]}>
-                    <View style={styles.itemHeader}>
-                      <ThemedText type="bodyStrong">{item.food.name}</ThemedText>
-                      <ThemedText type="bodyStrong">
-                        {`${formatCalories(scaled.calories)} kcal`}
-                      </ThemedText>
-                    </View>
-                    <FormField
-                      label={`${item.food.name} 섭취량`}
-                      unit={item.food.servingUnit}
-                      value={item.amount}
-                      onChangeText={(value) => {
-                        setItems((previous) =>
-                          previous.map((candidate) =>
-                            candidate.food.id === item.food.id
-                              ? { ...candidate, amount: value }
-                              : candidate,
-                          ),
-                        );
-                        setFormError(null);
-                      }}
-                      keyboardType="decimal-pad"
-                      inputMode="decimal"
-                      editable={!isSaving}
-                    />
-                    <MacroChips
-                      macros={{
-                        carbohydrates: scaled.carbohydrates,
-                        protein: scaled.protein,
-                        fat: scaled.fat,
-                      }}
-                    />
-                    <SecondaryButton
-                      label={`${item.food.name} 삭제`}
-                      disabled={isSaving}
-                      onPress={() => {
-                        setItems((previous) =>
-                          previous.filter((candidate) => candidate.food.id !== item.food.id),
-                        );
-                        setFormError(null);
-                      }}
-                    />
-                  </View>
-                );
-              })
-            )}
           </Card>
 
           {formError ? (
@@ -297,18 +262,12 @@ export default function MealEntryScreen() {
           ) : null}
         </ScrollView>
 
-        <View style={[styles.saveBar, { backgroundColor: theme.surfaceRaised, borderColor: theme.border }]}>
-          <View style={styles.saveTotals}>
-            <ThemedText type="small" themeColor="textSecondary">
-              합계
-            </ThemedText>
-            <ThemedText type="heading4">{`${formatCalories(totals.calories)} kcal`}</ThemedText>
-          </View>
+        <View style={styles.saveBar}>
           <PrimaryButton
-            label="저장하기"
+            label={isEditing ? '수정 저장하기' : '저장하기'}
             pendingLabel="저장 중입니다"
             pending={isSaving}
-            disabled={items.length === 0}
+            disabled={!canSave}
             onPress={() => void save()}
           />
         </View>
@@ -331,25 +290,9 @@ const styles = StyleSheet.create({
   },
   dateRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   dateLabel: { flex: 1, alignItems: 'center' },
-  results: { gap: Spacing.two },
-  resultRow: {
-    minHeight: ControlSize.minimum,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.three,
-    padding: Spacing.three,
-    borderWidth: BorderWidth.thin,
-    borderRadius: Radius.control,
-  },
-  resultCopy: { flexShrink: 1, gap: Spacing.half },
-  itemBlock: { gap: Spacing.three, padding: Spacing.three, borderRadius: Radius.control },
-  itemHeader: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: Spacing.two },
-  saveBar: {
-    gap: Spacing.two,
-    padding: Spacing.three,
-    borderTopWidth: BorderWidth.thin,
-  },
-  saveTotals: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
-  pressed: { opacity: Opacity.pressed },
+  preview: { width: '100%', borderRadius: Radius.control },
+  photoActions: { flexDirection: 'row', gap: Spacing.two },
+  photoButton: { flex: 1 },
+  memoInput: { minHeight: 96, paddingTop: Spacing.three, textAlignVertical: 'top' },
+  saveBar: { padding: Spacing.three },
 });
