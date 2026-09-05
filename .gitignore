@@ -47,3 +47,6 @@ example
 
 # QA artifacts
 qa-shots/
+
+# QA evidence artifacts
+.omo/

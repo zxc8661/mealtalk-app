@@ -1,4 +1,4 @@
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -10,7 +10,7 @@ import { ThemedView } from '@/components/themed-view';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useDatabase } from '@/db/database-context';
 import { storeMessage } from '@/db/store-error';
-import { formatKoreanDate, localToday, shiftDate } from '@/format/date';
+import { formatKoreanDate, isIsoDate, localToday, shiftDate } from '@/format/date';
 import { MealCard } from '@/meal/meal-presentation';
 import { removeRecord } from '@/meal/meal-write';
 import { useMealJournal } from '@/meal/use-meal-journal';
@@ -19,17 +19,30 @@ import { useMealJournal } from '@/meal/use-meal-journal';
 export default function JournalScreen() {
   const router = useRouter();
   const database = useDatabase();
-  const [date, setDate] = useState(localToday);
+  const params = useLocalSearchParams<{ date?: string }>();
+  const requestedDate = params.date && isIsoDate(params.date) ? params.date : null;
+
+  // Saving a record on another day hands that day over, so the list opens where
+  // the record actually is rather than on an empty today.
+  const [date, setDate] = useState(() => requestedDate ?? localToday());
   const [reloadToken, setReloadToken] = useState(0);
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const { meals, isLoading, error, reload } = useMealJournal(date, reloadToken);
 
+  // The tab stays mounted, so a later save has to be honoured on focus rather
+  // than at first render. The date is consumed once: without that, coming back
+  // to this tab would keep snapping to the saved record's day instead of the
+  // day the user had browsed to.
   useFocusEffect(
     useCallback(() => {
+      if (requestedDate !== null) {
+        setDate(requestedDate);
+        router.setParams({ date: undefined });
+      }
       setReloadToken((token) => token + 1);
-    }, []),
+    }, [requestedDate, router]),
   );
 
   const isToday = date === localToday();
